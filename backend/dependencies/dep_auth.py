@@ -1,5 +1,5 @@
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2AuthorizationCodeBearer
+from fastapi.security import OAuth2AuthorizationCodeBearer, OAuth2PasswordBearer
 from jose import jwt, JWTError
 from backend.models.mod_auth import AuthUser, UserRole, TokenData
 from backend.configuration.config import Config
@@ -7,11 +7,13 @@ import httpx
 from datetime import datetime
 from functools import lru_cache
 
-# OAuth2 configuration for Microsoft Entra External ID
-oauth2_scheme = OAuth2AuthorizationCodeBearer(
-    authorizationUrl=f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.b2clogin.com/{Config.AZURE_ENTRAID_TENANT_ID}/oauth2/v2.0/authorize",
-    tokenUrl=f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.b2clogin.com/{Config.AZURE_ENTRAID_TENANT_ID}/oauth2/v2.0/token"
-)
+# # OAuth2 configuration for Microsoft Entra External ID using OAuth2 Authorization Code Flow
+# oauth2_scheme = OAuth2AuthorizationCodeBearer(
+#     authorizationUrl=f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.b2clogin.com/{Config.AZURE_ENTRAID_TENANT_ID}/oauth2/v2.0/authorize",
+#     tokenUrl=f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.b2clogin.com/{Config.AZURE_ENTRAID_TENANT_ID}/oauth2/v2.0/token"
+# )
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 @lru_cache(maxsize=1)
 async def get_jwks():

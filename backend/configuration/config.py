@@ -23,10 +23,11 @@ class Config:
     AZURE_ENTRAID_CLIENT_ID = os.getenv("AZURE_ENTRAID_CLIENT_ID")
     AZURE_ENTRAID_SECRET = os.getenv("AZURE_ENTRAID_SECRET")
     AZURE_ENTRAID_B2C_EXTENSIONS = os.getenv("AZURE_ENTRAID_B2C_EXTENSIONS")
+    AZURE_ENTRAID_AUDIENCE = os.getenv("AZURE_ENTRAID_AUDIENCE")
     
     # JWT Configuration
     JWT_SECRET_KEY = os.getenv("AUTH_SECRET_KEY")
-    JWT_ALGORITHM = os.getenv("AUTH_ALGORITHM", "HS256")
+    JWT_ALGORITHM = os.getenv("AUTH_ALGORITHM", "RS256")
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("AUTH_EXPIRATION", "30"))
     
     # Azure Email Communication Service

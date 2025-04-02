@@ -18,8 +18,8 @@ class ErrorDetail(BaseModel):
 # Registration and Login Schemas
 class UserRegistrationRequest(BaseModel):
     email: EmailStr
-    password: str
-    name: str
+    password: Optional[str] = None
+    name: Optional[str] = None
     givenName: str
     surname: str
     postalCode: Optional[str] = None

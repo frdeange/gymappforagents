@@ -18,6 +18,7 @@ from fastapi import HTTPException
 import json
 from typing import Optional, Dict, Any
 from jose import jwt
+from backend.configuration.monitor import log_event, log_exception, start_span
 
 class AuthError:
     """Helper class to process Microsoft Entra ID API errors"""
@@ -135,193 +136,227 @@ class AuthError:
 class AuthService:
     @staticmethod
     async def register_user(db: ContainerProxy, registration: UserRegistrationRequest) -> RegisterResponse:
-        """
-        Start the registration process in Microsoft Entra External ID
-        """
-        # Step 1: Start registration flow
-        start_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/start"
+        try:
+            # Start operation span for registration
+            with start_span("register_user", attributes={"email": registration.email}):
+                log_event("User registration started", {"email": registration.email})
+                
+                # Step 1: Start registration flow
+                start_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/start"
 
-        attributes = {
-            "displayName": f"{registration.givenName} {registration.surname}",
-            "postalCode": registration.postalCode,
-            "streetAddress": registration.streetAddress,
-            "city": registration.city,
-            f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusBirthday": registration.cusBirthday,
-            f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusPhone": registration.cusPhone,
-            f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusRole": "user",  # Set role to 'user' by default,
-            "surname": registration.surname,
-            "givenName": registration.givenName,
-        }
+                attributes = {
+                    "displayName": f"{registration.givenName} {registration.surname}",
+                    "postalCode": registration.postalCode,
+                    "streetAddress": registration.streetAddress,
+                    "city": registration.city,
+                    f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusBirthday": registration.cusBirthday,
+                    f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusPhone": registration.cusPhone,
+                    f"{Config.AZURE_ENTRAID_B2C_EXTENSIONS}_cusRole": "user",  # Set role to 'user' by default,
+                    "surname": registration.surname,
+                    "givenName": registration.givenName,
+                }
 
-        start_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'challenge_type': 'oob password redirect',
-            'attributes': json.dumps(attributes),
-            'username': registration.email
-        }
+                start_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'challenge_type': 'oob password redirect',
+                    'attributes': json.dumps(attributes),
+                    'username': registration.email
+                }
 
-        async with httpx.AsyncClient() as client:
-            start_response = await client.post(start_url, data=start_payload)
-            if start_response.status_code != 200:
-                AuthError.raise_http_exception(start_response.json(), context="register_user - Step 1")
-            continuation_token = start_response.json().get("continuation_token")
+                async with httpx.AsyncClient() as client:
+                    start_response = await client.post(start_url, data=start_payload)
+                    if start_response.status_code != 200:
+                        AuthError.raise_http_exception(start_response.json(), context="register_user - Step 1")
+                    continuation_token = start_response.json().get("continuation_token")
 
-        # Step 2: Select authentication method (send OTP code)
-        challenge_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/challenge"
-        challenge_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'challenge_type': 'oob password redirect',
-            'continuation_token': continuation_token
-        }
+                # Step 2: Select authentication method (send OTP code)
+                challenge_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/challenge"
+                challenge_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'challenge_type': 'oob password redirect',
+                    'continuation_token': continuation_token
+                }
 
-        async with httpx.AsyncClient() as client:
-            challenge_response = await client.post(challenge_url, data=challenge_payload)
-            if challenge_response.status_code != 200:
-                AuthError.raise_http_exception(challenge_response.json(), context="register_user - Step 2")
+                async with httpx.AsyncClient() as client:
+                    challenge_response = await client.post(challenge_url, data=challenge_payload)
+                    if challenge_response.status_code != 200:
+                        AuthError.raise_http_exception(challenge_response.json(), context="register_user - Step 2")
 
-        return RegisterResponse(
-            message="OTP code has been sent to your email. Enter the code in the next step.",
-            continuation_token=continuation_token
-        )
+                log_event("User registration OTP sent", {"email": registration.email})
+                return RegisterResponse(
+                    message="OTP code has been sent to your email. Enter the code in the next step.",
+                    continuation_token=continuation_token
+                )
+        except Exception as e:
+            log_exception(e, {"email": registration.email, "operation": "register_user"})
+            raise
 
     @staticmethod
     async def verify_otp(request: VerifyOTPRequest) -> TokenResponse:
-        """
-        Verify OTP and complete registration process
-        """
-        if not request.password or not request.email:
-            raise HTTPException(status_code=400, detail="Missing 'password' or 'email' parameter")
+        try:
+            with start_span("verify_otp", attributes={"email": request.email}):
+                log_event("OTP verification started", {"email": request.email})
+                
+                if not request.password or not request.email:
+                    raise HTTPException(status_code=400, detail="Missing 'password' or 'email' parameter")
 
-        continue_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/continue"
+                continue_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/signup/v1.0/continue"
 
-        # Step 1: Verify OTP
-        otp_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'continuation_token': request.continuation_token,
-            'grant_type': 'oob',
-            'oob': request.otp
-        }
+                # Step 1: Verify OTP
+                otp_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'continuation_token': request.continuation_token,
+                    'grant_type': 'oob',
+                    'oob': request.otp
+                }
 
-        async with httpx.AsyncClient() as client:
-            otp_response = await client.post(continue_url, data=otp_payload)
-            otp_json = otp_response.json()
+                async with httpx.AsyncClient() as client:
+                    otp_response = await client.post(continue_url, data=otp_payload)
+                    otp_json = otp_response.json()
 
-            if otp_response.status_code != 200:
-                if otp_json.get("error") == "credential_required":
-                    continuation_token = otp_json.get("continuation_token")
-                else:
-                    AuthError.raise_http_exception(otp_json, context="verify_otp - Step 1")
-            else:
-                continuation_token = otp_json.get("continuation_token")
+                    if otp_response.status_code != 200:
+                        if otp_json.get("error") == "credential_required":
+                            continuation_token = otp_json.get("continuation_token")
+                        else:
+                            AuthError.raise_http_exception(otp_json, context="verify_otp - Step 1")
+                    else:
+                        continuation_token = otp_json.get("continuation_token")
 
-        if not continuation_token:
-            raise HTTPException(status_code=400, detail="No continuation_token received after OTP verification")
+                if not continuation_token:
+                    raise HTTPException(status_code=400, detail="No continuation_token received after OTP verification")
 
-        # Step 2: Send password
-        password_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'continuation_token': continuation_token,
-            'grant_type': 'password',
-            'password': request.password
-        }
+                # Step 2: Send password
+                password_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'continuation_token': continuation_token,
+                    'grant_type': 'password',
+                    'password': request.password
+                }
 
-        async with httpx.AsyncClient() as client:
-            password_response = await client.post(continue_url, data=password_payload)
-            if password_response.status_code != 200:
-                error_details = password_response.json()
-                raise HTTPException(status_code=400, detail={
-                    "error": "Error sending password",
-                    "suberror": error_details.get("suberror", "Not specified"),
-                    "details": error_details
-                })
+                async with httpx.AsyncClient() as client:
+                    password_response = await client.post(continue_url, data=password_payload)
+                    password_json = password_response.json()
+                    
+                    if password_response.status_code != 200:
+                        suberror = password_json.get("suberror")
 
-            continuation_token = password_response.json().get("continuation_token")
+                        # Special handling for password validation errors
+                        if suberror in [
+                            AuthError.PASSWORD_TOO_WEAK,
+                            AuthError.PASSWORD_TOO_SHORT,
+                            AuthError.PASSWORD_TOO_LONG,
+                            AuthError.PASSWORD_RECENTLY_USED,
+                            AuthError.PASSWORD_BANNED,
+                            AuthError.PASSWORD_IS_INVALID
+                        ]:
+                            raise HTTPException(status_code=400, detail={
+                                "code": suberror,
+                                "message": AuthError.ERROR_MESSAGES.get(suberror, "Password validation failed"),
+                                "description": password_json.get("error_description"),
+                                "action": "restart_registration", 
+                                "details": password_json
+                            })
 
-        if not continuation_token:
-            raise HTTPException(status_code=400, detail="No continuation_token received after sending password")
+                        # Otherwise, raise a generic error
+                        AuthError.raise_http_exception(password_json, context="verify_otp - Step 2")
+                    
+                    # Successfully processed password, get continuation token
+                    continuation_token = password_json.get("continuation_token")
 
-        # Step 3: Get final token
-        token_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/token"
-        token_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'continuation_token': continuation_token,
-            'grant_type': 'continuation_token',
-            'username': request.email,
-            'scope': 'openid profile email'
-        }
+                if not continuation_token:
+                    raise HTTPException(status_code=400, detail="No continuation_token received after sending password")
 
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(token_url, data=token_payload)
-            if token_response.status_code != 200:
-                AuthError.raise_http_exception(token_response.json(), context="verify_otp - Step 3")
-            
-            return TokenResponse(**token_response.json())
+                # Step 3: Get final token
+                token_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/token"
+                token_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'continuation_token': continuation_token,
+                    'grant_type': 'continuation_token',
+                    'username': request.email,
+                    'scope': 'openid profile email'
+                }
+
+                async with httpx.AsyncClient() as client:
+                    token_response = await client.post(token_url, data=token_payload)
+                    if token_response.status_code != 200:
+                        AuthError.raise_http_exception(token_response.json(), context="verify_otp - Step 3")
+                
+                log_event("OTP verification completed", {"email": request.email})
+                return TokenResponse(**token_response.json())
+        except Exception as e:
+            log_exception(e, {"email": request.email, "operation": "verify_otp"})
+            raise
 
     @staticmethod
     async def login(request: LoginRequest) -> TokenResponse:
-        """
-        Login a user using Microsoft Entra External ID
-        """
-        if not request.email or not request.password:
-            raise HTTPException(status_code=400, detail="Missing email or password")
+        try:
+            with start_span("login", attributes={"email": request.email}):
+                log_event("User login started", {"email": request.email})
+                
+                if not request.email or not request.password:
+                    raise HTTPException(status_code=400, detail="Missing email or password")
 
-        # Step 1: Initialize login with /initiate
-        initiate_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/initiate"
-        initiate_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'challenge_type': 'password redirect',
-            'username': request.email
-        }
+                # Step 1: Initialize login with /initiate
+                initiate_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/initiate"
+                initiate_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'challenge_type': 'password redirect',
+                    'username': request.email
+                }
 
-        async with httpx.AsyncClient() as client:
-            initiate_response = await client.post(initiate_url, data=initiate_payload)
-            if initiate_response.status_code != 200:
-                AuthError.raise_http_exception(initiate_response.json(), context="/initiate")
-            continuation_token = initiate_response.json().get("continuation_token")
+                async with httpx.AsyncClient() as client:
+                    initiate_response = await client.post(initiate_url, data=initiate_payload)
+                    if initiate_response.status_code != 200:
+                        AuthError.raise_http_exception(initiate_response.json(), context="/initiate")
+                    continuation_token = initiate_response.json().get("continuation_token")
 
-        if not continuation_token:
-            raise HTTPException(status_code=400, detail="No continuation_token received in /initiate")
+                if not continuation_token:
+                    raise HTTPException(status_code=400, detail="No continuation_token received in /initiate")
 
-        # Step 2: Select authentication method with /challenge
-        challenge_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/challenge"
-        challenge_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'challenge_type': 'password redirect',
-            'continuation_token': continuation_token
-        }
+                # Step 2: Select authentication method with /challenge
+                challenge_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/challenge"
+                challenge_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'challenge_type': 'password redirect',
+                    'continuation_token': continuation_token
+                }
 
-        async with httpx.AsyncClient() as client:
-            challenge_response = await client.post(challenge_url, data=challenge_payload)
-            if challenge_response.status_code != 200:
-                AuthError.raise_http_exception(challenge_response.json(), context="/challenge")
-            challenge_data = challenge_response.json()
+                async with httpx.AsyncClient() as client:
+                    challenge_response = await client.post(challenge_url, data=challenge_payload)
+                    if challenge_response.status_code != 200:
+                        AuthError.raise_http_exception(challenge_response.json(), context="/challenge")
+                    challenge_data = challenge_response.json()
 
-        if challenge_data.get("challenge_type") != "password":
-            raise HTTPException(status_code=400, detail={
-                "error": "Flow requires interactive authentication (redirect)",
-                "details": challenge_data
-            })
+                if challenge_data.get("challenge_type") != "password":
+                    raise HTTPException(status_code=400, detail={
+                        "error": "Flow requires interactive authentication (redirect)",
+                        "details": challenge_data
+                    })
 
-        continuation_token = challenge_data.get("continuation_token")
-        if not continuation_token:
-            raise HTTPException(status_code=400, detail="No continuation_token received in /challenge")
+                continuation_token = challenge_data.get("continuation_token")
+                if not continuation_token:
+                    raise HTTPException(status_code=400, detail="No continuation_token received in /challenge")
 
-        # Step 3: Request tokens with /token endpoint
-        token_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/token"
-        token_payload = {
-            'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
-            'continuation_token': continuation_token,
-            'grant_type': 'password',
-            'password': request.password,
-            'scope': 'openid profile email offline_access'
-        }
+                # Step 3: Request tokens with /token endpoint
+                token_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/oauth2/v2.0/token"
+                token_payload = {
+                    'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                    'continuation_token': continuation_token,
+                    'grant_type': 'password',
+                    'password': request.password,
+                    'scope': 'openid profile email offline_access'
+                }
 
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(token_url, data=token_payload)
-            if token_response.status_code != 200:
-                AuthError.raise_http_exception(token_response.json(), context="/token")
-            
-            return TokenResponse(**token_response.json())
+                async with httpx.AsyncClient() as client:
+                    token_response = await client.post(token_url, data=token_payload)
+                    if token_response.status_code != 200:
+                        AuthError.raise_http_exception(token_response.json(), context="/token")
+                
+                log_event("User login successful", {"email": request.email})
+                return TokenResponse(**token_response.json())
+        except Exception as e:
+            log_exception(e, {"email": request.email, "operation": "login"})
+            raise
 
     @staticmethod
     async def logout(token: str) -> None:
@@ -331,19 +366,6 @@ class AuthService:
         # For now, we just return success as token invalidation 
         # would be handled on the client side and by token expiration
         return None
-
-    @staticmethod
-    async def get_user_profile(db: ContainerProxy, user_id: str) -> Optional[UserProfile]:
-        """
-        Get user profile from our database
-        """
-        query = f'SELECT * FROM c WHERE c.id = "{user_id}" AND c.type = "user"'
-        items = list(db.query_items(query=query, enable_cross_partition_query=True))
-        
-        if not items:
-            return None
-            
-        return UserProfile(**items[0])
 
     @staticmethod
     async def submit_otp(request: SubmitOTPRequest) -> dict:
