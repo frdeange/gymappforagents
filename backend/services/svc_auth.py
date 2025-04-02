@@ -13,7 +13,7 @@ from backend.schemas.sch_auth import (
     RegisterResponse,
     UserInfo
 )
-from backend.models.mod_auth import TokenData
+from backend.models.mod_auth import TokenData, AuthUser
 from fastapi import HTTPException
 import json
 from typing import Optional, Dict, Any
@@ -273,7 +273,7 @@ class AuthService:
                     'continuation_token': continuation_token,
                     'grant_type': 'continuation_token',
                     'username': request.email,
-                    'scope': 'openid profile email'
+                    'scope': 'openid profile email offline_access'
                 }
 
                 async with httpx.AsyncClient() as client:
@@ -359,13 +359,21 @@ class AuthService:
             raise
 
     @staticmethod
-    async def logout(token: str) -> None:
+    async def logout(user: AuthUser) -> dict:
         """
         Logout user by invalidating their token
+        
+        Args:
+            user: The authenticated user object
+            
+        Returns:
+            A success message
         """
         # For now, we just return success as token invalidation 
         # would be handled on the client side and by token expiration
-        return None
+        with start_span("logout", attributes={"user_id": user.id}):
+            log_event("User logout", {"user_id": user.id, "email": user.email})
+            return {"message": "Successfully logged out"}
 
     @staticmethod
     async def submit_otp(request: SubmitOTPRequest) -> dict:

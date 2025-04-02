@@ -112,6 +112,17 @@ class UserInfo(BaseModel):
     postal_code: Optional[str] = None
     token_expires_at: Optional[float] = None  # Expiration timestamp of the current token
 
+# User Profile Update Schema
+class UpdateUserProfileRequest(BaseModel):
+    given_name: Optional[str] = None
+    family_name: Optional[str] = None
+    phone: Optional[str] = None
+    birthday: Optional[str] = None
+    street_address: Optional[str] = None
+    city: Optional[str] = None
+    postal_code: Optional[str] = None
+    preferred_language: Optional[str] = None
+
 # Token Refresh Schemas
 class RefreshTokenRequest(BaseModel):
     refresh_token: str

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Form
 from azure.cosmos import ContainerProxy
 from backend.schemas.sch_auth import (
     UserRegistrationRequest,
@@ -15,7 +15,8 @@ from backend.schemas.sch_auth import (
     PasswordResetVerifyResponse,
     ErrorDetail,
     UserInfo,
-    RefreshTokenRequest
+    RefreshTokenRequest,
+    UpdateUserProfileRequest
 )
 from backend.services.svc_auth import AuthService
 from backend.dependencies.dep_auth import get_current_user, get_current_admin, verify_token
@@ -95,11 +96,14 @@ async def submit_otp(request: SubmitOTPRequest):
     return await AuthService.submit_otp(request)
 
 @router.post("/logout")
-async def logout(token: str = Depends(get_current_user)):
+async def logout():
     """
     Logout current user
+    
+    This endpoint doesn't require authentication to avoid issues with token verification.
+    The actual token invalidation happens on the client side by removing tokens from storage.
     """
-    return await AuthService.logout(token)
+    return {"message": "Successfully logged out"}
 
 @router.post("/password-reset", response_model=PasswordResetInitiateResponse, responses={400: {"model": ErrorDetail}, 404: {"model": ErrorDetail}})
 async def initiate_password_reset(
@@ -165,3 +169,18 @@ async def refresh_access_token(request: RefreshTokenRequest):
     - invalid_grant: Authentication failed (invalid or expired refresh token)
     """
     return await AuthService.refresh_token(request.refresh_token)
+
+@router.post("/token", response_model=TokenResponse, tags=["Authentication"])
+async def token_login(
+    username: str = Form(...),
+    password: str = Form(...)
+):
+    """
+    Authenticates a user using Microsoft Entra ID CIAM.
+    Accepts form data for Swagger compatibility (OAuth2 Password Flow).
+    
+    This endpoint is compatible with OAuth2PasswordBearer(tokenUrl="/auth/token")
+    and allows direct login via Swagger UI using username and password fields.
+    """
+    login_request = LoginRequest(email=username, password=password)
+    return await AuthService.login(login_request)
