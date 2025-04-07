@@ -19,9 +19,9 @@ from backend.schemas.sch_auth import (
     UpdateUserProfileRequest
 )
 from backend.services.svc_auth import AuthService
-from backend.dependencies.dep_auth import get_current_user, get_current_admin, verify_token
+from backend.dependencies.dep_auth import get_current_user, get_current_admin, verify_auth_token
 from backend.configuration.database import get_container
-from backend.models.mod_auth import AuthUser, TokenData
+from backend.models.mod_auth import AuthUser, AuthTokenData
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -146,18 +146,8 @@ async def verify_password_reset(
     )
 
 @router.get("/me", response_model=UserInfo, responses={401: {"model": ErrorDetail}})
-async def get_current_user_info(token: str = Depends(get_current_user)):
-    """
-    Get information about the currently authenticated user based on their access token.
-    
-    Possible errors:
-    - unauthorized: Invalid or expired token
-    """
-    # Verify and decode the token
-    token_data = await verify_token(token)
-    
-    # Extract user information from the token data
-    return await AuthService.get_user_info(token_data)
+async def get_current_user_info(current_user: AuthUser = Depends(get_current_user)):
+    return current_user
 
 @router.post("/refreshtoken", response_model=TokenResponse, responses={400: {"model": ErrorDetail}, 401: {"model": ErrorDetail}})
 async def refresh_access_token(request: RefreshTokenRequest):
@@ -170,7 +160,7 @@ async def refresh_access_token(request: RefreshTokenRequest):
     """
     return await AuthService.refresh_token(request.refresh_token)
 
-@router.post("/token", response_model=TokenResponse, tags=["Authentication"])
+@router.post("/token", tags=["Authentication"])
 async def token_login(
     username: str = Form(...),
     password: str = Form(...)
@@ -183,4 +173,27 @@ async def token_login(
     and allows direct login via Swagger UI using username and password fields.
     """
     login_request = LoginRequest(email=username, password=password)
-    return await AuthService.login(login_request)
+    token_data = await AuthService.login(login_request)
+
+    return token_data
+
+@router.put("/profile", response_model=UserInfo, responses={400: {"model": ErrorDetail}, 401: {"model": ErrorDetail}})
+async def update_profile(
+    profile_data: UpdateUserProfileRequest,
+    token: str = Depends(get_current_user)
+):
+    """
+    Update user profile information in Entra ID
+    
+    This endpoint updates profile information stored in the user's Entra ID account.
+    
+    Possible errors:
+    - unauthorized: Invalid or expired token
+    - invalid_request: Invalid parameters in the request
+    - attribute_validation_failed: Some of the provided information is invalid
+    """
+    # Verify and decode the token
+    token_data = await verify_auth_token(token)
+    
+    # Update the user profile in Entra ID
+    return await AuthService.update_user_profile(token_data, profile_data)

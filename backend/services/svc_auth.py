@@ -11,9 +11,10 @@ from backend.schemas.sch_auth import (
     VerifyOTPRequest,
     SubmitOTPRequest,
     RegisterResponse,
-    UserInfo
+    UserInfo,
+    UpdateUserProfileRequest
 )
-from backend.models.mod_auth import TokenData, AuthUser
+from backend.models.mod_auth import AuthTokenData, AuthUser
 from fastapi import HTTPException
 import json
 from typing import Optional, Dict, Any
@@ -273,7 +274,7 @@ class AuthService:
                     'continuation_token': continuation_token,
                     'grant_type': 'continuation_token',
                     'username': request.email,
-                    'scope': 'openid profile email offline_access'
+                    'scope': Config.AZURE_ENTRAID_SCOPE
                 }
 
                 async with httpx.AsyncClient() as client:
@@ -344,7 +345,7 @@ class AuthService:
                     'continuation_token': continuation_token,
                     'grant_type': 'password',
                     'password': request.password,
-                    'scope': 'openid profile email offline_access'
+                    'scope': Config.AZURE_ENTRAID_SCOPE
                 }
 
                 async with httpx.AsyncClient() as client:
@@ -545,7 +546,7 @@ class AuthService:
             return password_reset_status
         
     @staticmethod
-    async def get_user_info(token_data: TokenData) -> UserInfo:
+    async def get_user_info(token_data: AuthTokenData) -> UserInfo:
         """
         Extract user information from token data
         
@@ -607,7 +608,7 @@ class AuthService:
             'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
             'refresh_token': refresh_token,
             'grant_type': 'refresh_token',
-            'scope': 'openid profile email offline_access'
+            'scope': Config.AZURE_ENTRAID_SCOPE
         }
         
         async with httpx.AsyncClient() as client:
@@ -617,3 +618,179 @@ class AuthService:
                 AuthError.raise_http_exception(token_response.json(), context="refresh_token")
             
             return TokenResponse(**token_response.json())
+
+    @staticmethod
+    async def update_user_profile(token_data: AuthTokenData, profile_data: UpdateUserProfileRequest) -> UserInfo:
+        """
+        Update user profile information in Microsoft Entra ID
+        
+        This method updates the user's profile information stored in Entra ID or Azure AD
+        
+        Args:
+            token_data: The decoded token data of the authenticated user
+            profile_data: The profile information to update
+            
+        Returns:
+            Updated user information with the changes reflected
+            
+        Raises:
+            HTTPException: If the update operation fails
+        """
+        try:
+            with start_span("update_user_profile", attributes={"user_id": token_data.id}):
+                log_event("User profile update started", {"user_id": token_data.id, "email": token_data.email})
+                
+                # Extract token claims to determine token source
+                unverified_claims = jwt.get_unverified_claims(token_data.original_token)
+                issuer = unverified_claims.get("iss", "")
+                
+                # Detect which type of token we're dealing with
+                is_azure_ad = "sts.windows.net" in issuer
+                
+                # Step 1: Prepare the user attributes to update
+                # Map the fields from the request to the appropriate attributes
+                attributes = {}
+                
+                if profile_data.given_name:
+                    attributes["givenName"] = profile_data.given_name
+                
+                if profile_data.family_name:
+                    attributes["surname"] = profile_data.family_name
+                
+                if profile_data.street_address:
+                    attributes["streetAddress"] = profile_data.street_address
+                
+                if profile_data.city:
+                    attributes["city"] = profile_data.city
+                
+                if profile_data.postal_code:
+                    attributes["postalCode"] = profile_data.postal_code
+                
+                # For custom extension attributes
+                extension_prefix = Config.AZURE_ENTRAID_B2C_EXTENSIONS
+                if profile_data.phone:
+                    if is_azure_ad:
+                        attributes["mobilePhone"] = profile_data.phone
+                    else:
+                        attributes[f"{extension_prefix}_cusPhone"] = profile_data.phone
+                
+                if profile_data.birthday:
+                    if is_azure_ad:
+                        # Azure AD doesn't have a birthday field, so we'll use an extension attribute
+                        # or you might need to store this in your own database
+                        pass
+                    else:
+                        attributes[f"{extension_prefix}_cusBirthday"] = profile_data.birthday
+                
+                if profile_data.preferred_language:
+                    attributes["preferredLanguage"] = profile_data.preferred_language
+                
+                # Skip update if no attributes to change
+                if not attributes:
+                    raise HTTPException(status_code=400, detail={
+                        "code": "invalid_request",
+                        "message": "No profile information provided to update"
+                    })
+                
+                # Step 2: Determine which API to use based on token type
+                if is_azure_ad:
+                    # For Azure AD tokens, use Microsoft Graph API
+                    # First, get an access token for Microsoft Graph
+                    token_url = f"https://login.microsoftonline.com/{unverified_claims.get('tid')}/oauth2/v2.0/token"
+                    token_payload = {
+                        'client_id': Config.AZURE_ENTRAID_CLIENT_ID,
+                        'client_secret': Config.AZURE_ENTRAID_SECRET,
+                        'scope': 'https://graph.microsoft.com/.default',
+                        'grant_type': 'client_credentials'
+                    }
+                    
+                    async with httpx.AsyncClient() as client:
+                        token_response = await client.post(token_url, data=token_payload)
+                        if token_response.status_code != 200:
+                            raise HTTPException(status_code=500, detail={
+                                "code": "graph_token_error",
+                                "message": "Failed to obtain access token for Microsoft Graph API"
+                            })
+                        
+                        graph_token = token_response.json().get('access_token')
+                        
+                        # Now update the user profile with Microsoft Graph API
+                        graph_url = f"https://graph.microsoft.com/v1.0/users/{token_data.id}"
+                        headers = {
+                            'Authorization': f'Bearer {graph_token}',
+                            'Content-Type': 'application/json'
+                        }
+                        
+                        update_response = await client.patch(graph_url, json=attributes, headers=headers)
+                        
+                        if update_response.status_code >= 400:
+                            # Handle error
+                            try:
+                                error_data = update_response.json()
+                                error_message = error_data.get("error", {}).get("message", "Unknown error")
+                                
+                                raise HTTPException(status_code=update_response.status_code, detail={
+                                    "code": "profile_update_error",
+                                    "message": f"Failed to update profile: {error_message}"
+                                })
+                            except (json.JSONDecodeError, KeyError):
+                                raise HTTPException(status_code=500, detail={
+                                    "code": "update_error",
+                                    "message": f"Unknown error updating profile: {update_response.status_code}"
+                                })
+                else:
+                    # For Entra External ID tokens, use usermanagement API
+                    update_url = f"https://{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.ciamlogin.com/{Config.AZURE_ENTRAID_TENANT_SUBDOMAIN}.onmicrosoft.com/usermanagement/v1.0/users/{token_data.id}"
+                    headers = {
+                        'Authorization': f'Bearer {token_data.original_token}',
+                        'Content-Type': 'application/json'
+                    }
+                    
+                    async with httpx.AsyncClient() as client:
+                        update_response = await client.patch(update_url, json=attributes, headers=headers)
+                        
+                        if update_response.status_code >= 400:
+                            # Handle error
+                            try:
+                                error_data = update_response.json()
+                                error_message = error_data.get("error", {}).get("message", "Unknown error")
+                                
+                                raise HTTPException(status_code=update_response.status_code, detail={
+                                    "code": "profile_update_error",
+                                    "message": f"Failed to update profile: {error_message}"
+                                })
+                            except (json.JSONDecodeError, KeyError):
+                                raise HTTPException(status_code=500, detail={
+                                    "code": "update_error",
+                                    "message": f"Unknown error updating profile: {update_response.status_code}"
+                                })
+                
+                # Step 3: Return updated user information
+                updated_user_info = UserInfo(
+                    id=token_data.id,
+                    email=token_data.email,
+                    name=token_data.name,
+                    role=token_data.role,
+                    token_expires_at=token_data.exp,
+                    # Include the updated fields
+                    given_name=profile_data.given_name,
+                    family_name=profile_data.family_name,
+                    phone=profile_data.phone,
+                    birthday=profile_data.birthday,
+                    street_address=profile_data.street_address,
+                    city=profile_data.city,
+                    postal_code=profile_data.postal_code
+                )
+                
+                log_event("User profile updated successfully", {"user_id": token_data.id, "email": token_data.email})
+                return updated_user_info
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions to preserve the status code and detail
+            raise
+        except Exception as e:
+            log_exception(e, {"user_id": token_data.id, "email": token_data.email, "operation": "update_user_profile"})
+            raise HTTPException(status_code=500, detail={
+                "code": "internal_error",
+                "message": "An unexpected error occurred while updating the user profile"
+            })

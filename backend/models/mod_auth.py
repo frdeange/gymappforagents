@@ -10,13 +10,25 @@ class UserRole(str, Enum):
 class AuthUser(BaseModel):
     id: str
     email: EmailStr
+    Fullname: str
     name: str
+    surName: str
     role: UserRole = UserRole.USER
+    phone: str
+    birthday: str
+    city: str
+    streetAddress : str    
+    postalCode: str
+    tokenExpiration : int
+    original_token: Optional[str] = None
 
-class TokenData(BaseModel):
+
+class AuthTokenData(BaseModel):
     id: str
     email: EmailStr
     name: str
+    userGivenName: Optional[str] = None
+    userLastName: Optional[str] = None
     role: UserRole = UserRole.USER
     exp: Optional[float] = None
-    original_token: Optional[str] = None  # Campo para guardar el token original
+    original_token: Optional[str] = None 
