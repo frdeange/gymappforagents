@@ -235,37 +235,9 @@ async def get_current_user(auth_token: str = Depends(oauth2_scheme)) -> AuthToke
     return user
 
 async def get_user_info(id_token: str) -> AuthUser:
-    """
-    Extract detailed user information from the ID token.
-    """
-    try:
-        # Decode the ID token to extract claims
-        unverified_claims = jwt.get_unverified_claims(id_token)
-
-        # Create an AuthUser object with detailed information
-        user = AuthUser(
-            id=unverified_claims.get("oid"),
-            email=unverified_claims.get("email"),
-            name=unverified_claims.get("name"),
-            role=unverified_claims.get("idtyp"),
-            exp=unverified_claims.get("exp"),
-            userGivenName=unverified_claims.get("given_name"),
-            userLastName=unverified_claims.get("family_name"),
-            phone=unverified_claims.get("userPhone"),
-            birthday=unverified_claims.get("userBirthday"),
-            street_address=unverified_claims.get("userStreetAddress"),
-            city=unverified_claims.get("city"),
-            postal_code=unverified_claims.get("postalCode")
-        )
-
-        return user
-    except Exception as e:
-        log_exception(e, {"id_token": id_token})
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid ID token"
-        )
-
+    user_info = await verify_id_token(id_token)
+    return user_info
+    
 def get_current_user_id(current_user: AuthUser = Depends(get_current_user)) -> str:
     """Get just the user ID from the current authenticated user"""
     return current_user.id
@@ -287,3 +259,24 @@ def get_current_trainer(current_user: AuthUser = Depends(get_current_user)) -> A
             detail="You don't have permission to perform this action"
         )
     return current_user
+
+class TokenValidator:
+    """
+    Utility class for validating and decoding access_token and id_token.
+    """
+
+    @staticmethod
+    async def validate_access_token(acess_token: str) -> AuthTokenData:
+        """
+        Validate the access token and return its claims.
+        """
+        return await verify_auth_token(acess_token)
+
+    @staticmethod
+    async def validate_id_token(id_token: str) -> AuthUser:
+        """
+        Validate the ID token and return its claims.
+        """
+        # Use the existing verify_id_token function to validate and decode the ID token
+        return await verify_id_token(id_token)
+        
