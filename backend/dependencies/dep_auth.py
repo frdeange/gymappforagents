@@ -4,7 +4,7 @@ from jose import jwt, JWTError
 from backend.models.mod_auth import AuthUser, UserRole, AuthTokenData
 from backend.configuration.config import Config
 import httpx
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 import json
 from backend.configuration.monitor import log_exception
@@ -107,7 +107,7 @@ async def verify_auth_token(token) -> AuthTokenData:
         unverified_header = jwt.get_unverified_header(token)
 
         # Validate token expiration
-        if unverified_claims.get("exp") < datetime.utcnow().timestamp():
+        if unverified_claims.get("exp") < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Invalid token: expired")
 
         # Validate algorithm
@@ -160,7 +160,7 @@ async def verify_id_token(token) -> AuthUser:
         unverified_header = jwt.get_unverified_header(token)
 
         # Validate token expiration
-        if unverified_claims.get("exp") < datetime.utcnow().timestamp():
+        if unverified_claims.get("exp") < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Invalid token: expired")
 
         # Validate algorithm
